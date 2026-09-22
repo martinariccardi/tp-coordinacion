@@ -24,20 +24,30 @@ class AggregationFilter:
             MOM_HOST, OUTPUT_QUEUE
         )
         self.fruit_top_by_client = {}
+        self.received_eofs_by_client = {}
 
     def _process_data(self, client_id, fruit, amount):
         logging.info("Processing data message")
         client_top = self.fruit_top_by_client.setdefault(client_id, [])
         for i in range(len(client_top)):
             if client_top[i].fruit == fruit:
-                client_top[i] = client_top[i] + fruit_item.FruitItem(
+                updated = client_top.pop(i) + fruit_item.FruitItem(
                     fruit, amount
                 )
+                bisect.insort(client_top, updated)
                 return
         bisect.insort(client_top, fruit_item.FruitItem(fruit, amount))
 
     def _process_eof(self, client_id):
         logging.info("Received EOF")
+        count = self.received_eofs_by_client.get(client_id, 0) + 1
+        self.received_eofs_by_client[client_id] = count
+        if count < SUM_AMOUNT:
+            return
+        del self.received_eofs_by_client[client_id]
+        self._send_final_fruit_top(client_id)
+
+    def _send_final_fruit_top(self, client_id):
         client_top = self.fruit_top_by_client.pop(client_id, {})
         fruit_chunk = list(client_top[-TOP_SIZE:])
         fruit_chunk.reverse()
