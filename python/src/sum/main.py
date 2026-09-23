@@ -1,6 +1,7 @@
 import os
 import logging
 import threading
+import hashlib
 
 from common import middleware, message_protocol, fruit_item
 
@@ -42,7 +43,6 @@ class SumFilter:
     def _notify_eof_to_replicas(self, client_id):
         self.control_exchange.send(message_protocol.internal.serialize_control_msg(client_id))
 
-
     def process_data_messsage(self, message, ack, nack):
         fields = message_protocol.internal.deserialize(message)
         if len(fields) == 3:
@@ -57,15 +57,15 @@ class SumFilter:
 
         with self.lock:
             client_fruits = self.amount_by_client_by_fruit.pop(client_id, {})
-        
+
         for final_fruit_item in client_fruits.values():
-            for data_output_exchange in self.data_output_exchanges:
-                data_output_exchange.send(
-                    message_protocol.internal.serialize(
-                        [client_id, final_fruit_item.fruit, final_fruit_item.amount]
-                    )
+            target_exchange_id = self._get_aggregation_index(final_fruit_item.fruit)
+            output_exchange = self.data_output_exchanges[target_exchange_id]
+            output_exchange.send(message_protocol.internal.serialize(
+                                    [client_id, final_fruit_item.fruit, final_fruit_item.amount]
+                                )
             )
-        
+                                
         logging.info(f"Broadcasting EOF message")
         for data_output_exchange in self.data_output_exchanges:
             data_output_exchange.send(message_protocol.internal.serialize([client_id]))
@@ -85,6 +85,11 @@ class SumFilter:
             MOM_HOST, SUM_CONTROL_EXCHANGE, [f"{SUM_PREFIX}_{ID}"]
         )
         control_exchange.start_consuming(self._process_control_eof)
+
+    # REVISAR
+    def _get_aggregation_index(self, fruit):
+        hash_object = hashlib.md5(fruit.encode())
+        return int(hash_object.hexdigest(), 16) % AGGREGATION_AMOUNT
         
 
 def main():

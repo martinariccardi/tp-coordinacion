@@ -43,6 +43,7 @@ class AggregationFilter:
         count = self.received_eofs_by_client.get(client_id, 0) + 1
         self.received_eofs_by_client[client_id] = count
         if count < SUM_AMOUNT:
+            logging.info("HOLA")
             return
         del self.received_eofs_by_client[client_id]
         self._send_final_fruit_top(client_id)
