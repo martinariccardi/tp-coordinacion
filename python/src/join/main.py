@@ -1,6 +1,7 @@
 import os
 import logging
 import bisect
+import signal
 
 from common import middleware, message_protocol, fruit_item
 
@@ -25,6 +26,21 @@ class JoinFilter:
         )
         self.tops_received_by_client = {}
         self.tops_count_by_client = {}
+
+        self.closed = False
+
+    def handle_sigterm(self, signum, frame):
+        logging.info("Received SIGTERM signal")
+        self.closed = True    
+        self.input_queue.stop_consuming()
+            
+            
+    def disconnect(self):
+        try:
+            self.input_queue.close()
+            self.output_queue.close()
+        except Exception:
+            logging.error("Error while disconnecting middleware")
 
     def process_messsage(self, message, ack, nack):
         logging.info("Received partial top")
@@ -57,7 +73,13 @@ class JoinFilter:
 
 
     def start(self):
-        self.input_queue.start_consuming(self.process_messsage)
+        signal.signal(signal.SIGTERM, self.handle_sigterm)
+        try:
+            self.input_queue.start_consuming(self.process_messsage)
+        except Exception:
+            logging.exception("Error while consuming messages")
+        finally:
+            self.disconnect()
 
 
 def main():

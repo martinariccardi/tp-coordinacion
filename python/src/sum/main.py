@@ -2,6 +2,7 @@ import os
 import logging
 import threading
 import hashlib
+import signal
 
 from common import middleware, message_protocol, fruit_item
 
@@ -40,6 +41,24 @@ class SumFilter:
         self.messages_received_by_client = {} # {client_id: msg_count}
         self.total_messaged_received_by_client = {} # {client_id: total_count}
         self.lock = threading.Lock()
+
+        # sigterm handling
+        self.closed = False
+    
+    def handle_sigterm(self, signum, frame):
+        logging.info("Received SIGTERM signal")
+        self.closed = True    
+        self.input_queue.stop_consuming()
+    
+    
+    def disconnect(self):
+        try:
+            self.input_queue.close()
+            self.control_exchange_publisher.close()
+            for exchange in self.data_output_exchanges:
+                exchange.close()
+        except Exception:
+            logging.error("Error while disconnecting middleware")
 
     def _process_data(self, client_id, fruit, amount):
         logging.info(f"Process data")
@@ -102,14 +121,20 @@ class SumFilter:
         ack()
         
     def start(self):
+        signal.signal(signal.SIGTERM, self.handle_sigterm)
+
         control_thread = threading.Thread(target=self._control_message_listener, daemon=True)
         control_thread.start()
-        self.input_queue.start_consuming(self.process_data_messsage)
+        try:
+            self.input_queue.start_consuming(self.process_data_messsage)
+        except Exception:
+            logging.exception("Error while consuming messages")
+        finally:
+            self.disconnect()
 
     def _control_message_listener(self):
         self.control_exchange_consumer.start_consuming(self._process_control_message)
 
-    # REVISAR
     def _get_aggregation_index(self, fruit):
         hash_object = hashlib.md5(fruit.encode())
         return int(hash_object.hexdigest(), 16) % AGGREGATION_AMOUNT
