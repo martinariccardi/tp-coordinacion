@@ -26,9 +26,10 @@ class SumFilter:
             )
             self.data_output_exchanges.append(data_output_exchange)
         self.amount_by_client_by_fruit = {}
-        self.control_exchange = middleware.MessageMiddlewareExchangeRabbitMQ(
-            MOM_HOST, SUM_CONTROL_EXCHANGE,
-            [f"{SUM_PREFIX}_{i}" for i in range(SUM_AMOUNT)],
+        self.control_exchange_publisher = middleware.MessageMiddlewareExchangeRabbitMQ(
+            MOM_HOST, SUM_CONTROL_EXCHANGE, [f"{SUM_PREFIX}_{i}" for i in range(SUM_AMOUNT)])
+        self.control_exchange_consumer =  middleware.MessageMiddlewareExchangeRabbitMQ(
+            MOM_HOST, SUM_CONTROL_EXCHANGE, [f"{SUM_PREFIX}_{ID}"]
         )
         self.lock = threading.Lock()
 
@@ -41,7 +42,7 @@ class SumFilter:
             ) + fruit_item.FruitItem(fruit, int(amount))
 
     def _notify_eof_to_replicas(self, client_id):
-        self.control_exchange.send(message_protocol.internal.serialize_control_msg(client_id))
+        self.control_exchange_publisher.send(message_protocol.internal.serialize_control_msg(client_id))
 
     def process_data_messsage(self, message, ack, nack):
         fields = message_protocol.internal.deserialize(message)
@@ -58,17 +59,17 @@ class SumFilter:
         with self.lock:
             client_fruits = self.amount_by_client_by_fruit.pop(client_id, {})
 
-        for final_fruit_item in client_fruits.values():
-            target_exchange_id = self._get_aggregation_index(final_fruit_item.fruit)
-            output_exchange = self.data_output_exchanges[target_exchange_id]
-            output_exchange.send(message_protocol.internal.serialize(
-                                    [client_id, final_fruit_item.fruit, final_fruit_item.amount]
-                                )
-            )
-                                
-        logging.info(f"Broadcasting EOF message")
-        for data_output_exchange in self.data_output_exchanges:
-            data_output_exchange.send(message_protocol.internal.serialize([client_id]))
+            for final_fruit_item in client_fruits.values():
+                target_exchange_id = self._get_aggregation_index(final_fruit_item.fruit)
+                output_exchange = self.data_output_exchanges[target_exchange_id]
+                output_exchange.send(message_protocol.internal.serialize(
+                                        [client_id, final_fruit_item.fruit, final_fruit_item.amount]
+                                    )
+                )
+                                    
+            logging.info(f"Broadcasting EOF message")
+            for data_output_exchange in self.data_output_exchanges:
+                data_output_exchange.send(message_protocol.internal.serialize([client_id]))
 
     def _process_control_eof(self, message, ack, nack):
         client_id = message_protocol.internal.deserialize_control_msg(message)
@@ -81,10 +82,7 @@ class SumFilter:
         self.input_queue.start_consuming(self.process_data_messsage)
 
     def _eof_listener(self):
-        control_exchange = middleware.MessageMiddlewareExchangeRabbitMQ(
-            MOM_HOST, SUM_CONTROL_EXCHANGE, [f"{SUM_PREFIX}_{ID}"]
-        )
-        control_exchange.start_consuming(self._process_control_eof)
+        self.control_exchange_consumer.start_consuming(self._process_control_eof)
 
     # REVISAR
     def _get_aggregation_index(self, fruit):
