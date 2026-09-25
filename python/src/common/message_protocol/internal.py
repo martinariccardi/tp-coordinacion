@@ -8,8 +8,8 @@ def serialize(message):
 def deserialize(message):
     return json.loads(message.decode("utf-8"))
 
-def serialize_control_msg(client_id):
-    return serialize({"client_id": client_id})
+def serialize_control_msg(message):
+    return serialize(message)
 
 def deserialize_control_msg(message):
-    return deserialize(message)["client_id"]
+    return deserialize(message)
