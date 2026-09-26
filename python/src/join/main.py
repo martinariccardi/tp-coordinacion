@@ -24,8 +24,9 @@ class JoinFilter:
         self.output_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             MOM_HOST, OUTPUT_QUEUE
         )
-        self.tops_received_by_client = {}
-        self.tops_count_by_client = {}
+
+        self.tops_received_by_client = {} # {client_id: top}
+        self.tops_count_by_client = {} # {client_id: partial_tops_received_count}
 
         self.closed = False
 
@@ -33,7 +34,6 @@ class JoinFilter:
         logging.info("Received SIGTERM signal")
         self.closed = True    
         self.input_queue.stop_consuming()
-            
             
     def disconnect(self):
         try:

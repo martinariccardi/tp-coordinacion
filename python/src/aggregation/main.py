@@ -24,8 +24,9 @@ class AggregationFilter:
         self.output_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             MOM_HOST, OUTPUT_QUEUE
         )
-        self.fruit_top_by_client = {}
-        self.received_eofs_by_client = {}
+
+        self.fruit_top_by_client = {} # {client_id: top}
+        self.received_eofs_by_client = {} # {client_id: received_eof_count}
 
         self.closed = False
 
@@ -33,7 +34,6 @@ class AggregationFilter:
         logging.info("Received SIGTERM signal")
         self.closed = True    
         self.input_exchange.stop_consuming()
-        
         
     def disconnect(self):
         try:
@@ -59,12 +59,11 @@ class AggregationFilter:
         count = self.received_eofs_by_client.get(client_id, 0) + 1
         self.received_eofs_by_client[client_id] = count
         if count < SUM_AMOUNT:
-            logging.info("HOLA")
             return
         del self.received_eofs_by_client[client_id]
-        self._send_final_fruit_top(client_id)
+        self._send_partial_fruit_top(client_id)
 
-    def _send_final_fruit_top(self, client_id):
+    def _send_partial_fruit_top(self, client_id):
         client_top = self.fruit_top_by_client.pop(client_id, {})
         fruit_chunk = list(client_top[-TOP_SIZE:])
         fruit_chunk.reverse()

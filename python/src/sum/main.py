@@ -23,6 +23,15 @@ class SumFilter:
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             MOM_HOST, INPUT_QUEUE
         )
+
+        self.control_exchange_publisher = middleware.MessageMiddlewareExchangeRabbitMQ(
+            MOM_HOST, SUM_CONTROL_EXCHANGE, [CONTROL_KEY]
+        )
+        
+        self.control_exchange_consumer =  middleware.MessageMiddlewareExchangeRabbitMQ(
+            MOM_HOST, SUM_CONTROL_EXCHANGE, [CONTROL_KEY]
+        )
+
         self.data_output_exchanges = []
         for i in range(AGGREGATION_AMOUNT):
             data_output_exchange = middleware.MessageMiddlewareExchangeRabbitMQ(
@@ -30,12 +39,6 @@ class SumFilter:
             )
             self.data_output_exchanges.append(data_output_exchange)
         
-        self.control_exchange_publisher = middleware.MessageMiddlewareExchangeRabbitMQ(
-            MOM_HOST, SUM_CONTROL_EXCHANGE, [CONTROL_KEY])
-        self.control_exchange_consumer =  middleware.MessageMiddlewareExchangeRabbitMQ(
-            MOM_HOST, SUM_CONTROL_EXCHANGE, [CONTROL_KEY]
-        )
-
         self.amount_by_client_by_fruit = {} # {client_id: {fruit: amount}}
         self.expected_total_by_client = {} # {client_id: expected_total}
         self.messages_received_by_client = {} # {client_id: msg_count}
