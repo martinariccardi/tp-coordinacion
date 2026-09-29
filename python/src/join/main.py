@@ -32,8 +32,11 @@ class JoinFilter:
 
     def handle_sigterm(self, signum, frame):
         logging.info("Received SIGTERM signal")
-        self.closed = True    
-        self.input_queue.stop_consuming()
+        self.closed = True 
+        try:   
+            self.input_queue.stop_consuming()
+        except Exception:
+            logging.error("Error while stopping input queue")
             
     def disconnect(self):
         try:

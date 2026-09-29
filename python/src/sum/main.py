@@ -17,6 +17,9 @@ AGGREGATION_PREFIX = os.environ["AGGREGATION_PREFIX"]
 COUNT_MSG_TYPE = 'count'
 EOF_MSG_TYPE = 'eof'
 CONTROL_KEY = 'CONTROL_KEY'
+THREAD_TIMEOUT = 5
+DATA_MSG_FIELDS = 3
+EOF_MSG_FIELDS = 2
 
 class SumFilter:
     def __init__(self):
@@ -27,7 +30,7 @@ class SumFilter:
         self.control_exchange_publisher = middleware.MessageMiddlewareExchangeRabbitMQ(
             MOM_HOST, SUM_CONTROL_EXCHANGE, [CONTROL_KEY]
         )
-        
+
         self.control_exchange_consumer =  middleware.MessageMiddlewareExchangeRabbitMQ(
             MOM_HOST, SUM_CONTROL_EXCHANGE, [CONTROL_KEY]
         )
@@ -51,8 +54,12 @@ class SumFilter:
     def handle_sigterm(self, signum, frame):
         logging.info("Received SIGTERM signal")
         self.closed = True    
-        self.input_queue.stop_consuming()
-    
+        try:
+            self.input_queue.stop_consuming()
+        except Exception:
+            logging.error("Error stopping input queue")
+
+        self._stop_consuming_safely(self.control_exchange_consumer)
     
     def disconnect(self):
         try:
@@ -60,8 +67,18 @@ class SumFilter:
             self.control_exchange_publisher.close()
             for exchange in self.data_output_exchanges:
                 exchange.close()
+            self.control_exchange_consumer.close()
         except Exception:
             logging.error("Error while disconnecting middleware")
+
+    def _stop_consuming_safely(self, exchange):
+        try:
+            conn = getattr(exchange, "connection", None)
+            if conn is None or conn.is_closed:
+                return
+            conn.add_callback_threadsafe(exchange.stop_consuming)
+        except Exception:
+            logging.error("Error stopping control consumer")
 
     def _process_data(self, client_id, fruit, amount):
         logging.info(f"Process data")
@@ -75,18 +92,21 @@ class SumFilter:
         else: 
             self.messages_received_by_client[client_id] = self.messages_received_by_client.get(client_id, 0) + 1
            
-
     def process_data_messsage(self, message, ack, nack):
         fields = message_protocol.internal.deserialize(message)
         with self.lock:
-            if len(fields) == 3:
-                self._process_data(*fields)
-            else:
-                self._notify_eof_to_replicas(*fields)
+            self._handle_data_message(fields)
         ack()
 
+    def _handle_data_message(self, fields):
+        if len(fields) == DATA_MSG_FIELDS:
+            self._process_data(*fields)
+        elif len(fields) == EOF_MSG_FIELDS:
+            self._notify_eof_to_replicas(*fields)
+        else: 
+            logging.error(f"Unknown message")
 
-    def _send_to_aggregation(self, client_id):
+    def _try_send_to_aggregation(self, client_id):
 
         if not self._validate_client_count(client_id):
             return 
@@ -110,33 +130,27 @@ class SumFilter:
         self.messages_received_by_client.pop(client_id, None)
 
     def _process_control_message(self, message, ack, nack):
-        msg_type, client_id, value = message_protocol.internal.deserialize_control_msg(message)
+        fields = message_protocol.internal.deserialize_control_msg(message)
         with self.lock:
-            if msg_type == COUNT_MSG_TYPE:
-                self.total_messaged_received_by_client[client_id] = self.total_messaged_received_by_client.get(client_id, 0) + value
-                self._send_to_aggregation(client_id)
-            elif msg_type == EOF_MSG_TYPE:
-                self.expected_total_by_client[client_id] = value
-                processed_items = self.messages_received_by_client.get(client_id, 0)
-                if processed_items > 0:
-                    self._notify_message_count(client_id, processed_items)
-                self._send_to_aggregation(client_id)
+            self._handle_control_message(*fields)
         ack()
-        
-    def start(self):
-        signal.signal(signal.SIGTERM, self.handle_sigterm)
 
-        control_thread = threading.Thread(target=self._control_message_listener, daemon=True)
-        control_thread.start()
-        try:
-            self.input_queue.start_consuming(self.process_data_messsage)
-        except Exception:
-            logging.exception("Error while consuming messages")
-        finally:
-            self.disconnect()
+    def _handle_control_message(self, msg_type, client_id, value):
+        if msg_type == COUNT_MSG_TYPE:
+            self.total_messaged_received_by_client[client_id] = self.total_messaged_received_by_client.get(client_id, 0) + value
+            self._try_send_to_aggregation(client_id)
+        elif msg_type == EOF_MSG_TYPE:
+            self.expected_total_by_client[client_id] = value
+            processed_items = self.messages_received_by_client.get(client_id, 0)
+            if processed_items > 0:
+                self._notify_message_count(client_id, processed_items)
+            self._try_send_to_aggregation(client_id)
 
     def _control_message_listener(self):
-        self.control_exchange_consumer.start_consuming(self._process_control_message)
+        try:
+            self.control_exchange_consumer.start_consuming(self._process_control_message)
+        except Exception:
+            logging.exception("Error while consuming messages")
 
     def _get_aggregation_index(self, fruit):
         hash_object = hashlib.md5(fruit.encode())
@@ -154,6 +168,20 @@ class SumFilter:
         confirmed_count = self.total_messaged_received_by_client.get(client_id,0)  
         expected_count = self.expected_total_by_client.get(client_id,0)
         return client_id in self.expected_total_by_client and confirmed_count == expected_count
+
+    def start(self):
+        signal.signal(signal.SIGTERM, self.handle_sigterm)
+        control_thread = threading.Thread(target=self._control_message_listener, daemon=True)
+        control_thread.start()
+        try:
+            self.input_queue.start_consuming(self.process_data_messsage)
+        except Exception:
+            logging.exception("Error while consuming messages")
+        finally:
+            control_thread.join(timeout=THREAD_TIMEOUT)
+            if control_thread.is_alive():
+                logging.warning(f"Control thread did not finish in time.")
+            self.disconnect()
         
 
 def main():
