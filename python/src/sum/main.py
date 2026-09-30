@@ -63,15 +63,18 @@ class SumFilter:
 
         self._stop_consuming_safely(self.control_exchange_consumer)
     
-    def disconnect(self):
+    def _disconnect(self):
+        self._close_connection(self.input_queue)
+        self._close_connection(self.control_exchange_publisher)
+        self._close_connection(self.control_exchange_consumer)
+        for exchange in self.data_output_exchanges:
+            self._close_connection(exchange)
+
+    def _close_connection(self, connection):
         try:
-            self.input_queue.close()
-            self.control_exchange_publisher.close()
-            for exchange in self.data_output_exchanges:
-                exchange.close()
-            self.control_exchange_consumer.close()
+            connection.close()
         except Exception:
-            logging.error("Error while disconnecting middleware")
+            logging.error("Error while closing connection")
 
     def _stop_consuming_safely(self, exchange):
         try:
@@ -183,7 +186,7 @@ class SumFilter:
             control_thread.join(timeout=THREAD_TIMEOUT)
             if control_thread.is_alive():
                 logging.warning(f"Control thread did not finish in time.")
-            self.disconnect()
+            self._disconnect()
         
 
 def main():
