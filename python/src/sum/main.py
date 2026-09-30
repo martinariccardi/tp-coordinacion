@@ -72,7 +72,8 @@ class SumFilter:
 
     def _close_connection(self, connection):
         try:
-            connection.close()
+            if connection:
+                connection.close()
         except Exception:
             logging.error("Error while closing connection")
 
