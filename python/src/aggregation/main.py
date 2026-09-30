@@ -37,11 +37,14 @@ class AggregationFilter:
         self.input_exchange.stop_consuming()
         
     def disconnect(self):
+        self._close_connection(self.input_exchange)
+        self._close_connection(self.output_queue)
+     
+    def _close_connection(self, connection):
         try:
-            self.input_exchange.close()
-            self.output_queue.close()
+            connection.close()
         except Exception:
-            logging.error("Error while disconnecting middleware")
+            logging.error("Error while closing connection")
 
     def _process_data(self, client_id, fruit, amount):
         logging.info("Processing data message")
