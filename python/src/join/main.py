@@ -39,11 +39,15 @@ class JoinFilter:
             logging.error("Error while stopping input queue")
             
     def disconnect(self):
+        self._close_connection(self.input_queue)
+        self._close_connection(self.output_queue)
+      
+    def _close_connection(self, connection):
         try:
-            self.input_queue.close()
-            self.output_queue.close()
+            if connection:
+                connection.close()
         except Exception:
-            logging.error("Error while disconnecting middleware")
+            logging.error("Error while closing connection")
 
     def process_messsage(self, message, ack, nack):
         logging.info("Received partial top")
