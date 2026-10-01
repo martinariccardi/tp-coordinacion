@@ -46,8 +46,8 @@ class SumFilter:
         
         self.amount_by_client_by_fruit = {} # {client_id: {fruit: amount}}
         self.expected_total_by_client = {} # {client_id: expected_total}
-        self.messages_received_by_client = {} # {client_id: msg_count}
-        self.total_messaged_received_by_client = {} # {client_id: total_count}
+        self.messages_received_by_client = {} # {client_id: msg_count_before_eof}
+        self.total_messages_received_by_client = {} # {client_id: total_count}
         self.lock = threading.Lock()
 
         # sigterm handling
@@ -125,7 +125,7 @@ class SumFilter:
             data_output_exchange.send(message_protocol.internal.serialize([client_id]))
 
         self.expected_total_by_client.pop(client_id, None)
-        self.total_messaged_received_by_client.pop(client_id, None)
+        self.total_messages_received_by_client.pop(client_id, None)
         self.messages_received_by_client.pop(client_id, None)
 
     def _process_control_message(self, message, ack, nack):
@@ -136,7 +136,7 @@ class SumFilter:
 
     def _handle_control_message(self, msg_type, client_id, value):
         if msg_type == COUNT_MSG_TYPE:
-            self.total_messaged_received_by_client[client_id] = self.total_messaged_received_by_client.get(client_id, 0) + value
+            self.total_messages_received_by_client[client_id] = self.total_messages_received_by_client.get(client_id, 0) + value
             self._try_send_to_aggregation(client_id)
         elif msg_type == EOF_MSG_TYPE:
             self.expected_total_by_client[client_id] = value
@@ -164,9 +164,9 @@ class SumFilter:
         self.control_exchange_publisher.send(message_protocol.internal.serialize_control_msg(message))
 
     def _validate_client_count(self, client_id):
-        confirmed_count = self.total_messaged_received_by_client.get(client_id,0)  
+        confirmed_count = self.total_messages_received_by_client.get(client_id,0)  
         expected_count = self.expected_total_by_client.get(client_id,0)
-        return client_id in self.expected_total_by_client and confirmed_count == expected_count
+        return client_id in self.expected_total_by_client and confirmed_count >= expected_count
 
     def start(self):
         signal.signal(signal.SIGTERM, self.handle_sigterm)
