@@ -1,12 +1,12 @@
 # Informe Trabajo Practico Coordinación
 
-## 1. Contexto
+## 1. Introducción
 
 El sistema procesa registros de fruta enviados por múltiples clientes a través de un pipeline de nodos (Gateway → Sum → Aggregation → Join → Gateway), comunicados por colas y exchanges de RabbitMQ. Tanto Sum como Aggregation pueden tener con múltiples réplicas para distribuir el trabajo. Este informe describe cómo esas réplicas se coordinan entre sí y cómo el diseño escala en tres dimensiones: cantidad de clientes, volumen de datos, y cantidad de réplicas.
 
 ## 2. Identificación de clientes
 
-Cada cliente que se conecta al Gateway recibe un `client_id` único, generado por el `MessageHandler` correspondiente. Ese `client_id` viaja en **todos** los mensajes internos del sistema y es la clave que permite que todos los nodos mantengan el estado de cada cliente de forma completamente independiente, en estructuras del tipo. Ningún nodo mezcla datos de clientes distintos.
+Cada cliente que se conecta al Gateway recibe un `client_id` único, generado por el `MessageHandler` correspondiente. Ese `client_id` viaja en **todos** los mensajes internos del sistema y es la clave que permite que todos los nodos mantengan el estado de cada cliente de forma completamente independiente. Ningún nodo mezcla datos de clientes distintos.
 
 ## 3. Reparto de trabajo entre réplicas
 
@@ -23,7 +23,7 @@ Sin embargo, esto nos genera un nuevo problema: saber que efectivamente el nodo 
 
 El `MessageHandler` del Gateway cuenta cuántos mensajes de datos envía por cliente y adjunta ese total al mensaje de EOF. Cuando una réplica de Sum recibe ese aviso, lo retransmite a **todas** las réplicas (incluida ella misma) a través del exchange de control para que todas sepan cual es el total de mensajes que debe ser procesado. 
 
-Antes de recibir el aviso de EOF cada una de las replicas fue sumando la cantidad de mensajes que proceso de un cliente en particular sin avisarle el resto. Una vez que llega el EOF y se sabe cual es el total esperado de ese cliente, cada replica manda su estado actual, es decir, la cantidad de mensajes que había procesado. Una vez que recibe el total, si llega a procesar un nuevo mensaje (es decir, procesa un mensaje después del EOF) manda un aviso al resto de las replicas que procesó un nuevo mensaje. Cada vez que una réplica recibe un aviso de conteo (ya sea el estado inicial de otra réplica, o un nuevo mensaje que esta u otra réplica procesó), lo suma a un único contador acumulado por cliente. Como cada aviso representa un incremento que nunca se retransmite dos veces, la suma de todos los avisos recibidos refleja exactamente la cantidad total de mensajes procesados entre todas las réplicas. Cuando ese acumulado iguala al total esperado, cada réplica sabe que ya no queda ningún mensaje del cliente pendiente de procesar en ninguna instancia, y envía su propia suma parcial hacia Aggregation.
+Antes de recibir el aviso de EOF cada una de las replicas fue sumando la cantidad de mensajes que proceso de un cliente en particular sin avisarle el resto. Una vez que llega el EOF y se sabe cual es el total esperado de ese cliente, cada replica manda su estado actual, es decir, la cantidad de mensajes que había procesado. Una vez que recibe el total, si llega a procesar un nuevo mensaje (es decir, procesa un mensaje después del EOF) manda un aviso al resto de las replicas que procesó un nuevo mensaje. Cada vez que una réplica recibe un aviso de conteo (ya sea el estado inicial de otra réplica, o un nuevo mensaje que esta u otra réplica procesó algo), lo suma a un contador de mensajes recibidos por cliente. Como cada aviso representa un incremento que nunca se retransmite dos veces, la suma de todos los avisos recibidos refleja exactamente la cantidad total de mensajes procesados entre todas las réplicas. Cuando ese acumulado iguala al total esperado, cada réplica sabe que ya no queda ningún mensaje del cliente pendiente de procesar en ninguna instancia, y envía su propia suma parcial hacia Aggregation.
 
 Este mecanismo evita depender del orden entre canales distintos, que en un sistema distribuido no están garantizados: el envío del aviso de fin puede, en teoría, adelantarse a la llegada de los últimos datos si ambos viajan por canales separados.
 
@@ -35,7 +35,7 @@ Cada instancia de Aggregation recibe un aviso de fin por cada réplica de Sum (`
 
 ### 3.3 Join
 
-De forma análoga, cada instancia de Aggregation envía exactamente un top parcial por cliente. El Join cuenta cuántos tops parciales recibió por cliente y, al llegar a `AGGREGATION_AMOUNT`, fusiona las listas recibidas, las ordena y recorta a `TOP_SIZE`, obteniendo así el top final que se devuelve al cliente a través del Gateway.
+De forma similar al Aggregation, el Join cuenta cuántos tops parciales recibió por cliente y, al llegar a `AGGREGATION_AMOUNT`, fusiona las listas recibidas, las ordena y recorta a `TOP_SIZE`, obteniendo así el top final que se devuelve al cliente a través del Gateway.
 
 ## 4. Escalabilidad
 
@@ -51,16 +51,16 @@ En términos simples, el sistema escala frente a muchos clientes porque la infor
 
 ### 4.2 Respecto al volumen de datos
 
-El sistema escala de forma favorable con respecto al volumen de datos porque la suma y la agregación se distribuyen en varias etapas. En Sum, cada mensaje de datos entra a una cola compartida y RabbitMQ lo entrega a una de las réplicas disponibles. Como cada instancia mantiene un estado local por fruta y por cliente, el volumen total de registros de los clientes se reparte entre varias areas de procesamiento en lugar de concentrarse en una sola. Esto permite que, aunque un cliente envíe millones de pares, el trabajo no se vuelva un cuello de botella. Cada replica procesa solo una parte del total y luego envía su estado parcial para su consolidación posterior.
+El sistema escala de forma favorable con respecto al volumen de datos porque la suma y la agregación se distribuyen en varias etapas. En Sum, cada mensaje de datos entra a una cola compartida y RabbitMQ lo entrega a una de las réplicas disponibles. Como cada instancia mantiene un estado local por fruta y por cliente, el volumen total de registros de los clientes se reparte entre varias areas de procesamiento en lugar de concentrarse en una sola. Esto permite que, aunque un cliente envíe millones de frutas, el trabajo no se vuelva un cuello de botella. Cada replica procesa solo una parte del total y luego envía su estado parcial para su consolidación posterior.
 
 La ventaja se repite en Aggregation: en lugar de que todas las sumas parciales de un cliente sean reenviadas a todas las instancias, se aplica una función de hash sobre la fruta para que cada subtotal vaya siempre a la misma instancia. Esto permite evitar el procesamiento redundante, mejorando la eficiencia del nodo.
 
 ### 4.3 Respecto a la cantidad de réplicas (controles)
 
-Como mencionamos anteriormente, agregar replicas mejora la eficiencia ante grandes volúmenes de datos. Sin embargo, agregar replicas también tiene un costo de coordinación, especialmente en Sum. En Sum, la coordinación entre réplicas exige un mecanismo de conteo distribuido para saber cuándo un cliente terminó de enviar todos sus mensajes y cuándo ya no quedan entradas pendientes en ninguna instancia. Ese mecanismo implica mensajes de control redundantes y broadcast de estados parciales por cliente, por lo que el costo de coordinación crece con la cantidad de réplicas.
+Como mencionamos anteriormente, agregar replicas mejora la eficiencia ante grandes volúmenes de datos. Sin embargo, agregar replicas también tiene un costo de coordinación, especialmente en Sum. En Sum, la coordinación entre réplicas exige un mecanismo de conteo distribuido para saber cuándo un cliente terminó de enviar todos sus mensajes y cuándo ya no quedan entradas pendientes en ninguna instancia. Ese mecanismo implica mensajes de control y broadcast de estados parciales por cliente, por lo que el costo de coordinación crece con la cantidad de réplicas.
 
-Este overhead es el precio que paga la distribución del trabajo: cuanto más particionada está la carga, más difícil resulta saber que el conjunto completo ya fue procesado. Aun así, este costo se concentra en la fase de cierre del cliente y no se paga en cada mensaje de datos. Por eso, el aumento de réplicas sigue siendo útil en la práctica y no invalida la escalabilidad del sistema.
+Este overhead es el precio que paga la division del trabajo: cuantas más replicas tenga, más difícil resulta saber que el conjunto completo ya fue procesado. Aun así, este costo se concentra en la fase de cierre del cliente. Por eso, el aumento de réplicas sigue siendo útil en la práctica y no invalida la escalabilidad del sistema.
 
 En cambio, en Aggregation y Join la coordinación es mucho más simple. Cada réplica de Sum ya envía su suma parcial con la garantía de que el cliente está cerrado, y cada instancia de Aggregation solo debe contar cuántos tops parciales o mensajes de cierre recibió para completar una barrera por cliente. Esto hace que el costo de escalar Aggregation sea mucho menor que el de escalar Sum: el intercambio de control es más sencillo y no requiere un conteo cruzado de todos los datos procesados.
 
-En síntesis, la cantidad de réplicas puede aumentar el rendimiento del sistema hasta cierto punto, pero no lo hace gratis: en Sum, la coordinación de cierre se vuelve más costosa; en Aggregation y Join, el sobrecosto de sincronización es significativamente menor y la etapa se comporta más como una barrera simple. Por ello, el diseño es escalable en la práctica, aunque la mejor relación rendimiento/costo se obtiene equilibrando la cantidad de réplicas de Sum con la de Aggregation.
+En síntesis, la cantidad de réplicas puede aumentar el rendimiento del sistema, pero no lo hace gratis: en Sum, la coordinación de cierre se vuelve más costosa.
