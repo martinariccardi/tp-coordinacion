@@ -36,17 +36,17 @@ class MessageMiddlewareBaseRabbitMQ(MessageMiddleware):
 		try:
 			callback = self._create_callback(on_message_callback)
 			self.channel.basic_consume(queue=self.queue_name, on_message_callback=callback)
+			self.is_consuming = True
+			self.channel.start_consuming()
 		except DISCONNECTION_ERRORS as e:
 			raise MessageMiddlewareDisconnectedError() from e
 		except Exception as e:
 			raise MessageMiddlewareMessageError(e) from e
-	
-		self.is_consuming = True
-		self.channel.start_consuming()
 
 	def stop_consuming(self):
 		if not self.is_consuming:
 			return
+		
 		try:
 			self._verify_channel_is_open()
 			self.channel.stop_consuming()
@@ -68,8 +68,10 @@ class MessageMiddlewareBaseRabbitMQ(MessageMiddleware):
 		try:
 			if self.connection and not self.connection.is_closed:
 				self.connection.close()
-		except Exception:
-			raise MessageMiddlewareCloseError()
+			if self.channel and self.channel.is_open:
+				self.channel.close()
+		except Exception as e:
+			raise MessageMiddlewareCloseError() from e
 		finally:
 			self.is_consuming = False
 
@@ -93,7 +95,10 @@ class MessageMiddlewareQueueRabbitMQ(MessageMiddlewareBaseRabbitMQ, MessageMiddl
 	def __init__(self, host, queue_name):
 		super().__init__(host)
 		self.queue_name = queue_name
-		self.channel.queue_declare(queue=self.queue_name)
+		try:
+			self.channel.queue_declare(queue=self.queue_name)
+		except DISCONNECTION_ERRORS as e:
+			raise MessageMiddlewareDisconnectedError() from e
 
 	def send(self, message):
 		try:
@@ -128,7 +133,7 @@ class MessageMiddlewareExchangeRabbitMQ(MessageMiddlewareBaseRabbitMQ, MessageMi
 	def _set_up_exchange(self):
 		self.channel.exchange_declare(exchange=self.exchange_name, exchange_type="direct")
 		
-		result = self.channel.queue_declare(queue="", exclusive=True)
+		result = self.channel.queue_declare(queue="", exclusive=True, auto_delete=True)
 		
 		self.queue_name = result.method.queue
 		
