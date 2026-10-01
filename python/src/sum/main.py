@@ -60,8 +60,10 @@ class SumFilter:
             self.input_queue.stop_consuming()
         except Exception:
             logging.error("Error stopping input queue")
-
-        self._stop_consuming_safely(self.control_exchange_consumer)
+        try:
+            self.control_exchange_consumer.stop_consuming_threadsafe()
+        except Exception:
+            logging.error("Error stopping control exchange")
     
     def _disconnect(self):
         self._close_connection(self.input_queue)
@@ -76,15 +78,6 @@ class SumFilter:
                 connection.close()
         except Exception:
             logging.error("Error while closing connection")
-
-    def _stop_consuming_safely(self, exchange):
-        try:
-            conn = getattr(exchange, "connection", None)
-            if conn is None or conn.is_closed:
-                return
-            conn.add_callback_threadsafe(exchange.stop_consuming)
-        except Exception:
-            logging.error("Error stopping control consumer")
 
     def _process_data(self, client_id, fruit, amount):
         logging.info(f"Process data")

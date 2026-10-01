@@ -55,6 +55,15 @@ class MessageMiddlewareBaseRabbitMQ(MessageMiddleware):
 		finally:
 			self.is_consuming = False
 
+	def stop_consuming_threadsafe(self):
+		try:
+			self._verify_connection_is_open()
+			self.connection.add_callback_threadsafe(self.stop_consuming)
+		except DISCONNECTION_ERRORS as e:
+			raise MessageMiddlewareDisconnectedError() from e
+		except Exception as e:
+			raise MessageMiddlewareMessageError(e) from e
+			
 	def close(self):
 		try:
 			if self.connection and not self.connection.is_closed:
